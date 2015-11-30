@@ -1,4 +1,5 @@
 from disklavierParser import MidiParser
+import os
 
 class MidiFileController:
     def __init__(self, parser):
@@ -101,20 +102,95 @@ class MidiFileController:
 
             #event: one byte with MSB=1, followed by n bytes with MSB=0
             status = self.mBytes[self.i]
-            if status < 128:
+            if status < 128: #this should not occur
                 self.i += 1
-            elif status == 255:
+            elif status == 255: #meta event
                 self.readMetaEvent()
-            elif status == 240:
+            elif status == 240: #sysex event
                 self.readSysexEvent()
-            elif (status >= 192) & (status <224):
-                #short event with one data byte
+            elif (status >= 192) & (status <224): #short event with one data byte
                 self.parser.processStandardEvent(status, p = self.mBytes[self.i+1], v=0, time=self.currentTime)
                 self.i += 2
-            elif self.mBytes[self.i+2] < 128:
+            elif self.mBytes[self.i+2] < 128: #standard event with two data bytes
                 self.parser.processStandardEvent(status, p = self.mBytes[self.i+1], v=self.mBytes[self.i+2], time=self.currentTime)
                 self.i += 3
+            else:
+                self.i += 1
 
+
+    def writeEventToFile(self, dataBytes, deltaT = 0):
+        ticks = 0
+        if (deltaT > 0) & (self.tickLength > 0):
+            ticks = int((deltaT / self.tickLength) + 0.5) #+0.5 to round correctly
+
+        self.midiFile.write(bytearray(self.convertTicksToMidiDeltaBytes(ticks)))
+        self.midiFile.write(bytearray(dataBytes))
+
+    def writeSysexEvent(self, dataBytes, deltaT = 0):
+        bytesToWrite = [240, len(dataBytes)]
+        bytesToWrite.extend(dataBytes)
+        self.writeEventToFile(bytesToWrite, deltaT=deltaT)
+
+    def writeSequencerEvent(self, dataBytes, deltaT = 0):
+        bytesToWrite = [255, 127, len(dataBytes)]
+        bytesToWrite.extend(dataBytes)
+        self.writeEventToFile(bytesToWrite, deltaT=deltaT)
+
+    def writeTempoChange(self, tempo, deltaT = 0):
+        self.tempo = tempo
+        self.tickLength = 60.0/(tempo * self.quarterNoteDivision)
+        microSecondsInQuarter = int(60000000/tempo)
+
+        byteValues = convertNumberToBytes(microSecondsInQuarter, numberOfBytes=3)
+        bytesToWrite = [255, 81, 3]
+        bytesToWrite.extend(byteValues)
+
+        self.writeEventToFile(bytesToWrite, deltaT=deltaT)
+
+    def writeHeaderChunk(self, midiFormat=0, tracks=1, division=500):
+        valuesToWrite = [77, 84, 104, 100]
+        valuesToWrite.extend(convertNumberToBytes(6, numberOfBytes=4))
+        valuesToWrite.extend(convertNumberToBytes(midiFormat, numberOfBytes=2))
+        valuesToWrite.extend(convertNumberToBytes(tracks, numberOfBytes=2))
+        valuesToWrite.extend(convertNumberToBytes(division, numberOfBytes=2))
+
+        self.quarterNoteDivision = division
+        self.midiFile.write(bytearray(valuesToWrite))
+
+    def writeTrackChunk(self):
+        valuesToWrite = [77, 84, 114, 107, 0, 0, 16, 0] #the last 4 values are a placeholder for the actual track length
+        self.midiFile.write(bytearray(valuesToWrite))
+
+    def writeTrackLength(self):
+        #replace the bytes that five the track length in the track chunk
+        #do this after the whole file has been written
+        self.midiFile.seek(0, os.SEEK_END)
+        byteCount = self.midiFile.tell()
+
+        byteCount = byteCount - 22 #length of track = length of file - 22
+        print("track length: %s") %byteCount
+        valuesToWrite = convertNumberToBytes(byteCount, numberOfBytes=4)
+
+        self.midiFile.seek(18)
+        self.midiFile.write(bytearray(valuesToWrite))
+
+    def convertTicksToMidiDeltaBytes(self, ticks):
+        #takes a number of ticks and converts them into an array of ints, according to the MIDI protocol
+        deltaTvalues = []
+        #calculate values of all bytes
+        while(ticks > 127):
+            v = ticks % 128
+            deltaTvalues.append(v)
+            ticks = (ticks - v) / 128
+        deltaTvalues.append(ticks)
+
+        midiBytes = []
+        thisRange = range(len(deltaTvalues)-1, 0, -1)
+        for i in thisRange:
+            midiBytes.append(128 + deltaTvalues[i])
+        midiBytes.append(deltaTvalues[0])
+
+        return midiBytes
 
 
 
